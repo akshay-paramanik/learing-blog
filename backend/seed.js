@@ -10,6 +10,7 @@ const CourseCatalog = require("./models/CourseCatalog");
 const seedCatalog = [
   {
     course: "JavaScript foundations",
+    category: "JavaScript",
     description: "Build a confident base for modern web development.",
     level: "Beginner",
     duration: "3 weeks",
@@ -24,6 +25,7 @@ const seedCatalog = [
   },
   {
     course: "Node.js backend",
+    category: "Backend",
     description: "Design practical services with Node, Express, and MongoDB.",
     level: "Intermediate",
     duration: "4 weeks",
@@ -38,6 +40,7 @@ const seedCatalog = [
   },
   {
     course: "Product design essentials",
+    category: "Design",
     description: "Turn open questions into clear digital experiences.",
     level: "Beginner",
     duration: "2 weeks",
@@ -87,6 +90,7 @@ async function seed() {
   for (const course of seedCatalog) {
     catalog.push({
       course: course.course,
+      category: course.category,
       description: course.description,
       level: course.level,
       duration: course.duration,

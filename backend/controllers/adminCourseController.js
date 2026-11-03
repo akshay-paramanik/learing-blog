@@ -5,6 +5,7 @@ function catalogResponse(course) {
   return {
     id: course._id,
     course: course.course,
+    category: course.category || "General",
     description: course.description,
     level: course.level,
     duration: course.duration,
@@ -25,7 +26,7 @@ function normalizeSkills(skills) {
   return skills.map((skill) => String(skill).trim()).filter(Boolean);
 }
 
-function validateCourseInput(course, description, level, duration, outcomes, skills, lessons) {
+function validateCourseInput(course, description, level, duration, outcomes, skills, lessons, category) {
   const normalizedSkills = normalizeSkills(skills);
   const normalizedOutcomes = normalizeSkills(outcomes);
 
@@ -46,13 +47,13 @@ function validateCourseInput(course, description, level, duration, outcomes, ski
 
   return {
     course: course.trim(),
+    category: typeof category === "string" && category.trim() ? category.trim() : "General",
     description: description.trim(),
     level: level.trim(),
     duration: duration.trim(),
     outcomes: normalizedOutcomes,
     skills: normalizedSkills,
     lessons: Array.isArray(lessons) ? lessons : [],
-    image: req.body.image,
   };
 }
 
@@ -64,7 +65,8 @@ async function addCourse(req, res) {
     req.body.duration,
     req.body.outcomes,
     req.body.skills,
-    req.body.lessons
+    req.body.lessons,
+    req.body.category
   );
 
   if (!data) {
@@ -102,7 +104,8 @@ async function updateCourse(req, res) {
     req.body.duration,
     req.body.outcomes,
     req.body.skills,
-    req.body.lessons
+    req.body.lessons,
+    req.body.category
   );
 
   if (!data) {

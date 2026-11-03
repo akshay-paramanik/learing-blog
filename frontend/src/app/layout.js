@@ -12,8 +12,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "learning/blog",
-  description: "A calmer way to grow your skills.",
+  title: "Learn Loop | Topic Library",
+  description: "Explore practical lessons, study at your pace, and track your progress.",
 };
 
 export default function RootLayout({ children }) {

@@ -7,6 +7,11 @@ const courseCatalogSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    category: {
+      type: String,
+      default: "General",
+      trim: true,
+    },
     description: {
       type: String,
       required: true,
