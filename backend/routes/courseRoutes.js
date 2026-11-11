@@ -1,5 +1,6 @@
 const express = require("express");
 const auth = require("../middleware/auth");
+const learnerAuth = require("../middleware/learnerAuth");
 const {
   selectCourse,
   getMyCourses,
@@ -10,7 +11,7 @@ const { getProgress, updateProgress } = require("../controllers/progressControll
 
 const router = express.Router();
 
-router.use(auth);
+router.use(auth, learnerAuth);
 router.post("/", selectCourse);
 router.get("/", getMyCourses);
 router.get("/progress", getProgress);

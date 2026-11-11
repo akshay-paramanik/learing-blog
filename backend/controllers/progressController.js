@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const CourseCatalog = require("../models/CourseCatalog");
 const StudyProgress = require("../models/StudyProgress");
+const User = require("../models/User");
 
 function progressResponse(progress) {
   return {
@@ -15,6 +16,58 @@ async function getProgress(req, res) {
     return res.json({ progress: progress.map(progressResponse) });
   } catch (error) {
     return res.status(500).json({ message: "Unable to get study progress" });
+  }
+}
+
+async function getLearnerProgress(req, res) {
+  try {
+    const users = await User.find({ admin: { $ne: true } })
+      .select("name email createdAt")
+      .sort({ name: 1 })
+      .lean();
+    const userIds = users.map((user) => user._id);
+    const records = userIds.length
+      ? await StudyProgress.find({ user: { $in: userIds } })
+          .populate({ path: "topic", select: "course lessons" })
+          .lean()
+      : [];
+    const progressByUser = new Map();
+
+    for (const record of records) {
+      if (!record.topic) continue;
+
+      const id = String(record.user);
+      const topicLessons = record.topic.lessons || [];
+      const lessonIds = new Set(topicLessons.map((lesson) => String(lesson._id)));
+      const completedLessons = [...new Set(record.completedLessons.map(String))]
+        .filter((lessonId) => lessonIds.has(lessonId)).length;
+      const topics = progressByUser.get(id) || [];
+
+      topics.push({
+        topicId: String(record.topic._id),
+        course: record.topic.course,
+        completedLessons,
+        totalLessons: topicLessons.length,
+      });
+      progressByUser.set(id, topics);
+    }
+
+    return res.json({
+      users: users.map((user) => {
+        const topics = progressByUser.get(String(user._id)) || [];
+        return {
+          id: String(user._id),
+          name: user.name,
+          email: user.email,
+          createdAt: user.createdAt,
+          topics,
+          completedLessons: topics.reduce((total, topic) => total + topic.completedLessons, 0),
+          totalLessons: topics.reduce((total, topic) => total + topic.totalLessons, 0),
+        };
+      }),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Unable to get learner progress" });
   }
 }
 
@@ -51,4 +104,4 @@ async function updateProgress(req, res) {
   }
 }
 
-module.exports = { getProgress, updateProgress };
+module.exports = { getProgress, getLearnerProgress, updateProgress };

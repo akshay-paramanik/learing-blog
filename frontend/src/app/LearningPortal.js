@@ -123,6 +123,7 @@ function isDatabaseId(value) {
 export default function LearningPortal({ initialView = "home", initialAuthMode = "login" }) {
   const router = useRouter();
   const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
   const [view, setView] = useState(initialView);
   const [authMode, setAuthMode] = useState(initialAuthMode);
   const [auth, setAuth] = useState({ name: "", email: "", password: "" });
@@ -130,10 +131,19 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
   const [activeTopicId, setActiveTopicId] = useState(topicId(starterTopics[0]));
   const [activeLessonIndex, setActiveLessonIndex] = useState(0);
   const [progress, setProgress] = useState({});
+  const [selectedCourses, setSelectedCourses] = useState([]);
+  const [selectedCoursesError, setSelectedCoursesError] = useState("");
+  const [selectionTopicId, setSelectionTopicId] = useState(null);
+  const [savingCourse, setSavingCourse] = useState(false);
+  const [cancellingCourseId, setCancellingCourseId] = useState(null);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All topics");
   const [adminForm, setAdminForm] = useState(emptyTopicForm());
   const [editingTopicId, setEditingTopicId] = useState(null);
+  const [adminSection, setAdminSection] = useState("topics");
+  const [learnerProgress, setLearnerProgress] = useState([]);
+  const [learnerProgressLoading, setLearnerProgressLoading] = useState(true);
+  const [learnerProgressError, setLearnerProgressError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -157,16 +167,11 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
   const completedTotal = Object.values(progress).reduce((total, lessons) => total + lessons.length, 0);
 
   useEffect(() => {
-    const restoreProgress = window.setTimeout(() => {
-      try {
-        const saved = JSON.parse(window.localStorage.getItem(progressStorageKey) || "{}");
-        if (saved && typeof saved === "object") setProgress(saved);
-      } catch {}
-    }, 0);
+    let active = true;
 
     request("/catalog")
       .then(({ courses }) => {
-        if (courses?.length) {
+        if (active && courses?.length) {
           setTopics(courses);
           setActiveTopicId(topicId(courses[0]));
         }
@@ -174,26 +179,125 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
       .catch(() => {});
 
     request("/auth/me")
-      .then(({ user: currentUser }) => setUser(currentUser))
-      .catch(() => {});
+      .then(({ user: currentUser }) => {
+        if (!active) return;
+        setUser(currentUser);
+        setAuthReady(true);
+        if (initialView === "auth") {
+          const destination = currentUser.admin ? "admin" : "home";
+          setView(destination);
+          router.replace(currentUser.admin ? "/admin" : "/");
+        } else if (currentUser.admin && initialView !== "admin") {
+          setView("admin");
+          router.replace("/admin");
+        } else if (!currentUser.admin && initialView === "admin") {
+          setView("home");
+          router.replace("/");
+        }
+      })
+      .catch(() => {
+        if (!active) return;
+        setUser(null);
+        setAuthReady(true);
+        if (initialView === "admin") {
+          setView("home");
+          router.replace("/");
+        }
+        try {
+          const saved = JSON.parse(window.localStorage.getItem(progressStorageKey) || "{}");
+          if (saved && typeof saved === "object") setProgress(saved);
+        } catch {}
+      });
 
-    return () => window.clearTimeout(restoreProgress);
-  }, []);
+    return () => { active = false; };
+  }, [initialView, router]);
 
   useEffect(() => {
     if (!user) return;
+    if (user.admin) {
+      request("/admin/courses")
+        .then(({ courses }) => setTopics(courses))
+        .catch(() => {});
+      return;
+    }
+
     request("/courses/progress")
       .then(({ progress: records }) => {
         const saved = Object.fromEntries(records.map((record) => [record.topicId, record.completedLessons]));
         setProgress((current) => ({ ...current, ...saved }));
       })
       .catch(() => {});
-    if (user.admin) {
-      request("/admin/courses")
-        .then(({ courses }) => setTopics(courses))
-        .catch(() => {});
-    }
+
+    request("/courses")
+      .then(({ courses }) => {
+        setSelectedCourses(courses);
+        setSelectedCoursesError("");
+      })
+      .catch((error) => setSelectedCoursesError(error.message));
   }, [user]);
+
+  async function selectCourse(topic, selection) {
+    if (!user || user.admin) return;
+    setSavingCourse(true);
+    try {
+      const { course } = await request("/courses", {
+        method: "POST",
+        body: JSON.stringify({
+          course: topic.course,
+          skills: selection.skills,
+          learningDate: selection.learningDate,
+          learningTime: selection.learningTime,
+        }),
+      });
+      setSelectedCourses((current) => [...current, course]);
+      setSelectionTopicId(null);
+      setSelectedCoursesError("");
+      notify(`${course.course} added to your learning plan.`);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setSavingCourse(false);
+    }
+  }
+
+  async function cancelCourse(course) {
+    if (!window.confirm(`Cancel your selection for “${course.course}”?`)) return;
+    setCancellingCourseId(String(course.id));
+    try {
+      await request(`/courses/${course.id}`, { method: "DELETE" });
+      setSelectedCourses((current) => current.filter((item) => String(item.id) !== String(course.id)));
+      notify(`${course.course} was cancelled.`);
+    } catch (error) {
+      notify(error.message);
+    } finally {
+      setCancellingCourseId(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!user?.admin) return;
+    let active = true;
+    request("/admin/users/progress")
+      .then(({ users }) => {
+        if (active) setLearnerProgress(users);
+      })
+      .catch((error) => {
+        if (active) setLearnerProgressError(error.message);
+      })
+      .finally(() => {
+        if (active) setLearnerProgressLoading(false);
+      });
+    return () => { active = false; };
+  }, [user]);
+
+  function refreshLearnerProgress() {
+    setLearnerProgressLoading(true);
+    setLearnerProgressError("");
+    request("/admin/users/progress")
+      .then(({ users }) => setLearnerProgress(users))
+      .catch((error) => setLearnerProgressError(error.message))
+      .finally(() => setLearnerProgressLoading(false));
+  }
 
   function notify(text) {
     setMessage(text);
@@ -257,10 +361,14 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
         method: "POST",
         body: JSON.stringify(auth),
       });
+      if (currentUser.admin) {
+        setLearnerProgressLoading(true);
+        setLearnerProgressError("");
+      }
       setUser(currentUser);
       setAuth({ name: "", email: "", password: "" });
-      navigate("home", "/");
-      notify("You are signed in. Your study progress will sync to your account.");
+      navigate(currentUser.admin ? "admin" : "home", currentUser.admin ? "/admin" : "/");
+      notify(currentUser.admin ? "You are signed in as an administrator." : "You are signed in. Your study progress will sync to your account.");
     } catch (error) {
       notify(error.message);
     } finally {
@@ -271,6 +379,8 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
   async function logout() {
     await request("/auth/logout", { method: "POST" }).catch(() => {});
     setUser(null);
+    setSelectedCourses([]);
+    setSelectedCoursesError("");
     navigate("home", "/");
     notify("You have been logged out.");
   }
@@ -361,21 +471,30 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
     }
   }
 
+  if (!authReady || (initialView === "auth" && user)) {
+    const message = initialView === "auth"
+      ? "Redirecting to your workspace..."
+      : initialView === "admin"
+        ? "Checking admin access..."
+        : "Loading your workspace...";
+    return <main className="lp-shell lp-admin-loading">{message}</main>;
+  }
+
   return (
     <main className="lp-shell">
       <header className="lp-header">
-        <button className="lp-brand" onClick={() => navigate("home", "/")} aria-label="Learning library home">
+        <button className="lp-brand" onClick={() => user?.admin ? navigate("admin", "/admin") : navigate("home", "/")} aria-label={user?.admin ? "Admin dashboard" : "Learning library home"}>
           <span className="lp-brand-mark">L</span>
           <span>learn<span className="lp-brand-slash">/</span>loop</span>
         </button>
-        <label className="lp-header-search">
+        {!user?.admin && <label className="lp-header-search">
           <span aria-hidden="true">⌕</span>
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search topics, skills..." />
-        </label>
+        </label>}
         <nav className="lp-nav" aria-label="Main navigation">
-          <button className={view === "home" || view === "reader" ? "is-active" : ""} onClick={() => navigate("home", "/")}>Learn</button>
-          {user && <button className={view === "my-courses" ? "is-active" : ""} onClick={() => navigate("my-courses", "/learning")}>My progress</button>}
-          {user?.admin && <button className={view === "admin" ? "is-active" : ""} onClick={() => navigate("admin", "/admin")}>Admin</button>}
+          {!user?.admin && <button className={view === "home" || view === "reader" ? "is-active" : ""} onClick={() => navigate("home", "/")}>Learn</button>}
+          {user && !user.admin && <button className={view === "my-courses" ? "is-active" : ""} onClick={() => navigate("my-courses", "/learning")}>My progress</button>}
+          {user?.admin && <button className={view === "admin" ? "is-active" : ""} onClick={() => navigate("admin", "/admin")}>Admin dashboard</button>}
         </nav>
         <div className="lp-account">
           {user ? (
@@ -404,6 +523,11 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
           openTopic={openTopic}
           join={() => openAuth("register")}
           user={user}
+          selectedCourses={selectedCourses}
+          selectionTopicId={selectionTopicId}
+          setSelectionTopicId={setSelectionTopicId}
+          selectCourse={selectCourse}
+          savingCourse={savingCourse}
         />
       )}
       {view === "reader" && activeTopic && activeLesson && (
@@ -427,6 +551,10 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
           openTopic={openTopic}
           explore={() => navigate("home", "/")}
           user={user}
+          selectedCourses={selectedCourses}
+          selectedCoursesError={selectedCoursesError}
+          cancellingCourseId={cancellingCourseId}
+          cancelCourse={cancelCourse}
         />
       )}
       {view === "auth" && (
@@ -445,9 +573,15 @@ export default function LearningPortal({ initialView = "home", initialAuthMode =
       {view === "admin" && user?.admin && (
         <AdminView
           topics={topics}
+          section={adminSection}
+          onSectionChange={setAdminSection}
           form={adminForm}
           editingTopicId={editingTopicId}
           busy={busy}
+          learnerProgress={learnerProgress}
+          learnerProgressLoading={learnerProgressLoading}
+          learnerProgressError={learnerProgressError}
+          refreshLearnerProgress={refreshLearnerProgress}
           updateField={updateAdminForm}
           updateLesson={updateAdminLesson}
           addLesson={() => updateAdminForm("lessons", [...adminForm.lessons, emptyLesson()])}
@@ -482,7 +616,88 @@ function emptyTopicForm() {
   };
 }
 
-function LibraryView({ topics, allTopics, categories, category, setCategory, progress, completedTotal, lessonTotal, openTopic, join, user }) {
+function formatLearningDate(value) {
+  const dateValue = String(value).slice(0, 10);
+  const date = new Date(`${dateValue}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? "Date unavailable"
+    : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function CourseSelectionForm({ topic, saving, onCancel, onSubmit }) {
+  const [skills, setSkills] = useState(topic.skills || []);
+  const [learningDate, setLearningDate] = useState("");
+  const [learningTime, setLearningTime] = useState("09:00");
+  const [error, setError] = useState("");
+  const today = new Date();
+  const minimumDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+  function toggleSkill(skill) {
+    setSkills((current) => current.includes(skill)
+      ? current.filter((item) => item !== skill)
+      : [...current, skill]);
+  }
+
+  function submit(event) {
+    event.preventDefault();
+    if (!skills.length) {
+      setError("Choose at least one skill for this course.");
+      return;
+    }
+    if (!learningDate) {
+      setError("Choose the date you plan to study.");
+      return;
+    }
+    setError("");
+    onSubmit({ skills, learningDate, learningTime });
+  }
+
+  return (
+    <form className="lp-course-selection" onSubmit={submit}>
+      <p className="lp-course-selection-title">Plan your learning</p>
+      <fieldset>
+        <legend>Choose skills to focus on</legend>
+        <div className="lp-skill-options">
+          {(topic.skills || []).map((skill) => (
+            <label key={skill}>
+              <input type="checkbox" checked={skills.includes(skill)} onChange={() => toggleSkill(skill)} />
+              <span>{skill}</span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      {(!topic.skills || topic.skills.length === 0) && <p className="lp-course-form-error">This course has no skills to select yet.</p>}
+      <div className="lp-course-schedule-fields">
+        <label>First study date<input type="date" min={minimumDate} value={learningDate} onChange={(event) => setLearningDate(event.target.value)} required /></label>
+        <label>Study time<input type="time" value={learningTime} onChange={(event) => setLearningTime(event.target.value)} required /></label>
+      </div>
+      {error && <p className="lp-course-form-error" role="alert">{error}</p>}
+      <div className="lp-course-form-actions">
+        <button className="lp-primary-button" type="submit" disabled={saving || !topic.skills?.length}>{saving ? "Adding..." : "Add course to my plan"}<span aria-hidden="true">→</span></button>
+        <button className="lp-course-dismiss" type="button" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function LibraryView({
+  topics,
+  allTopics,
+  categories,
+  category,
+  setCategory,
+  progress,
+  completedTotal,
+  lessonTotal,
+  openTopic,
+  join,
+  user,
+  selectedCourses,
+  selectionTopicId,
+  setSelectionTopicId,
+  selectCourse,
+  savingCourse,
+}) {
   return (
     <div className="lp-page">
       <section className="lp-welcome">
@@ -531,6 +746,23 @@ function LibraryView({ topics, allTopics, categories, category, setCategory, pro
                   <h3>{topic.course}</h3>
                   <p>{topic.description}</p>
                   <div className="lp-topic-tags">{(topic.skills || []).slice(0, 4).map((skill) => <span key={skill}>{skill}</span>)}</div>
+                  {user && !user.admin && <div className="lp-topic-course-action">
+                    {selectedCourses.some((course) => course.course === topic.course) ? (
+                      <span className="lp-selected-label">Added to your courses</span>
+                    ) : (
+                      <button className="lp-text-button" onClick={() => setSelectionTopicId(selectionTopicId === topicId(topic) ? null : topicId(topic))}>
+                        {selectionTopicId === topicId(topic) ? "Close selection" : "Select course"} <span aria-hidden="true">{selectionTopicId === topicId(topic) ? "−" : "＋"}</span>
+                      </button>
+                    )}
+                  </div>}
+                  {selectionTopicId === topicId(topic) && user && !user.admin && (
+                    <CourseSelectionForm
+                      topic={topic}
+                      saving={savingCourse}
+                      onCancel={() => setSelectionTopicId(null)}
+                      onSubmit={(selection) => selectCourse(topic, selection)}
+                    />
+                  )}
                 </div>
                 <div className="lp-topic-progress">
                   <span>{completed}/{lessonCount} lessons</span>
@@ -586,11 +818,44 @@ function ReaderView({ topic, lesson, lessonIndex, progress, onBack, onChooseLess
   );
 }
 
-function ProgressView({ topics, progress, completedTotal, lessonTotal, openTopic, explore, user }) {
+function ProgressView({
+  topics,
+  progress,
+  completedTotal,
+  lessonTotal,
+  openTopic,
+  explore,
+  user,
+  selectedCourses,
+  selectedCoursesError,
+  cancellingCourseId,
+  cancelCourse,
+}) {
   return (
     <div className="lp-page lp-progress-page">
-      <div className="lp-page-heading"><div><p className="lp-kicker">YOUR STUDY SPACE</p><h1>My progress</h1><p>Every completed lesson is a step forward. Pick up where you left off.</p></div><button className="lp-secondary-button" onClick={explore}>Explore topics <span aria-hidden="true">↗</span></button></div>
+      <div className="lp-page-heading"><div><p className="lp-kicker">YOUR STUDY SPACE</p><h1>My learning</h1><p>Manage your course schedule and pick up lessons where you left off.</p></div><button className="lp-secondary-button" onClick={explore}>Explore topics <span aria-hidden="true">↗</span></button></div>
       {!user && <div className="lp-sync-note">You are studying as a guest. Sign in to sync progress across devices.</div>}
+      {user && !user.admin && <section className="lp-selected-courses">
+        <div className="lp-section-title"><div><p className="lp-kicker">YOUR SCHEDULE</p><h2>Selected courses</h2></div><span>{selectedCourses.length} {selectedCourses.length === 1 ? "course" : "courses"}</span></div>
+        {selectedCoursesError && <p className="lp-course-error" role="alert">{selectedCoursesError}</p>}
+        {selectedCourses.length === 0 ? <div className="lp-empty"><h3>No courses selected yet</h3><p>Choose a course from the library to build your learning schedule.</p></div> : (
+          <div className="lp-selected-course-list">
+            {selectedCourses.map((course) => (
+              <article className="lp-selected-course" key={course.id}>
+                <div className="lp-selected-course-main">
+                  <p className="lp-kicker">LEARNING PLAN</p>
+                  <h3>{course.course}</h3>
+                  <p className="lp-course-date">{formatLearningDate(course.learningDate)} · {course.learningTime}</p>
+                  <div className="lp-topic-tags">{course.skills.map((skill) => <span key={skill}>{skill}</span>)}</div>
+                </div>
+                <button className="lp-cancel-course" onClick={() => cancelCourse(course)} disabled={String(cancellingCourseId) === String(course.id)}>
+                  {String(cancellingCourseId) === String(course.id) ? "Cancelling..." : "Cancel course"}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>}
       <div className="lp-progress-summary">
         <div><span>LESSONS COMPLETED</span><strong>{completedTotal}<small> / {lessonTotal}</small></strong></div>
         <div><span>TOPICS STARTED</span><strong>{topics.filter((topic) => completionFor(topic, progress).length).length}<small> / {topics.length}</small></strong></div>
@@ -631,12 +896,36 @@ function AuthView({ mode, form, setMode, onChange, onSubmit, busy }) {
   );
 }
 
-function AdminView({ topics, form, editingTopicId, busy, updateField, updateLesson, addLesson, removeLesson, onSubmit, onEdit, onDelete, onCancelEdit }) {
+function AdminView({
+  topics,
+  section,
+  onSectionChange,
+  form,
+  editingTopicId,
+  busy,
+  learnerProgress,
+  learnerProgressLoading,
+  learnerProgressError,
+  refreshLearnerProgress,
+  updateField,
+  updateLesson,
+  addLesson,
+  removeLesson,
+  onSubmit,
+  onEdit,
+  onDelete,
+  onCancelEdit,
+}) {
   return (
     <div className="lp-page lp-admin-page">
-      <div className="lp-page-heading"><div><p className="lp-kicker">CONTENT MANAGEMENT</p><h1>Topic studio</h1><p>Publish clear, structured lessons to the learning library.</p></div><span className="lp-admin-badge">ADMIN ACCESS</span></div>
-      <div className="lp-admin-metrics"><div><span>PUBLISHED TOPICS</span><strong>{topics.length}</strong></div><div><span>LESSONS IN LIBRARY</span><strong>{topics.reduce((total, topic) => total + (topic.lessons?.length || 0), 0)}</strong></div><div><span>CATEGORIES</span><strong>{new Set(topics.map((topic) => topic.category || "General")).size}</strong></div></div>
-      <div className="lp-admin-layout">
+      <div className="lp-page-heading"><div><p className="lp-kicker">ADMINISTRATION</p><h1>Admin dashboard</h1><p>Manage your learning library and keep track of learner progress.</p></div><span className="lp-admin-badge">ADMIN ACCESS</span></div>
+      <nav className="lp-admin-tabs" aria-label="Admin dashboard sections">
+        <button className={section === "topics" ? "is-active" : ""} aria-pressed={section === "topics"} onClick={() => onSectionChange("topics")}>Manage topics</button>
+        <button className={section === "progress" ? "is-active" : ""} aria-pressed={section === "progress"} onClick={() => onSectionChange("progress")}>Learner progress</button>
+      </nav>
+      {section === "topics" ? <>
+        <div className="lp-admin-metrics"><div><span>PUBLISHED TOPICS</span><strong>{topics.length}</strong></div><div><span>LESSONS IN LIBRARY</span><strong>{topics.reduce((total, topic) => total + (topic.lessons?.length || 0), 0)}</strong></div><div><span>CATEGORIES</span><strong>{new Set(topics.map((topic) => topic.category || "General")).size}</strong></div></div>
+        <div className="lp-admin-layout">
         <form className="lp-editor" onSubmit={onSubmit}>
           <div className="lp-editor-heading"><div><p className="lp-kicker">{editingTopicId ? "EDIT TOPIC" : "NEW TOPIC"}</p><h2>{editingTopicId ? "Update the lesson path" : "Build a lesson path"}</h2></div>{editingTopicId && <button className="lp-text-button" type="button" onClick={onCancelEdit}>Cancel edit</button>}</div>
           <div className="lp-form-grid">
@@ -664,11 +953,69 @@ function AdminView({ topics, form, editingTopicId, busy, updateField, updateLess
           {topics.map((topic) => <article className="lp-admin-topic" key={topicId(topic)}><div className="lp-admin-topic-info"><span>{topic.category || "General"} · {topic.lessons?.length || 0} lessons</span><h3>{topic.course}</h3><p>{topic.description}</p></div><div className="lp-admin-topic-actions"><button onClick={() => onEdit(topic)}>Edit</button><button className="lp-delete-button" onClick={() => onDelete(topic)}>Delete</button></div></article>)}
           {topics.length === 0 && <div className="lp-empty"><p>No topics have been published yet.</p></div>}
         </section>
-      </div>
+        </div>
+      </> : <LearnerProgressView
+        users={learnerProgress}
+        loading={learnerProgressLoading}
+        error={learnerProgressError}
+        onRefresh={refreshLearnerProgress}
+      />}
     </div>
   );
 }
 
+function LearnerProgressView({ users, loading, error, onRefresh }) {
+  const activeLearners = users.filter((user) => user.completedLessons > 0).length;
+  const completedLessons = users.reduce((total, user) => total + user.completedLessons, 0);
+
+  return (
+    <section className="lp-learners">
+      <div className="lp-learners-heading">
+        <div><p className="lp-kicker">LEARNER OVERVIEW</p><h2>Progress by learner</h2><p>Review completed lessons for each learner account.</p></div>
+        <button className="lp-secondary-button" type="button" onClick={onRefresh} disabled={loading}>{loading ? "Refreshing..." : "Refresh progress"} <span aria-hidden="true">↻</span></button>
+      </div>
+      <div className="lp-admin-metrics">
+        <div><span>LEARNER ACCOUNTS</span><strong>{users.length}</strong></div>
+        <div><span>ACTIVE LEARNERS</span><strong>{activeLearners}</strong></div>
+        <div><span>LESSONS COMPLETED</span><strong>{completedLessons}</strong></div>
+      </div>
+      {error && <div className="lp-learners-error" role="alert"><span>{error}</span><button type="button" onClick={onRefresh}>Try again</button></div>}
+      {loading && users.length === 0 ? <div className="lp-empty"><p>Loading learner progress...</p></div> : error && users.length === 0 ? null : users.length === 0 ? (
+        <div className="lp-empty"><h3>No learner accounts yet</h3><p>New learner accounts will appear here.</p></div>
+      ) : (
+        <div className="lp-learner-list">
+          {users.map((user) => {
+            const percent = user.totalLessons ? Math.round((user.completedLessons / user.totalLessons) * 100) : 0;
+            return (
+              <details className="lp-learner-card" key={user.id}>
+                <summary>
+                  <span className="lp-learner-avatar" aria-hidden="true">{user.name?.charAt(0).toUpperCase() || "L"}</span>
+                  <span className="lp-learner-identity"><strong>{user.name}</strong><small>{user.email}</small></span>
+                  <span className="lp-learner-completion"><strong>{user.completedLessons} / {user.totalLessons}</strong><small>lessons completed</small></span>
+                  <span className="lp-learner-percent">{percent}%</span>
+                  <span className="lp-learner-chevron" aria-hidden="true">⌄</span>
+                </summary>
+                <div className="lp-learner-details">
+                  {user.topics.length ? user.topics.map((topic) => {
+                    const topicPercent = topic.totalLessons ? Math.round((topic.completedLessons / topic.totalLessons) * 100) : 0;
+                    return (
+                      <div className="lp-learner-topic" key={topic.topicId}>
+                        <div><strong>{topic.course}</strong><span>{topic.completedLessons} of {topic.totalLessons} lessons</span></div>
+                        <div className="lp-progress-track" role="progressbar" aria-label={`${topic.course} progress`} aria-valuenow={topicPercent} aria-valuemin="0" aria-valuemax="100"><i style={{ width: `${topicPercent}%` }} /></div>
+                        <small>{topicPercent}%</small>
+                      </div>
+                    );
+                  }) : <p className="lp-learner-no-progress">No lesson progress recorded yet.</p>}
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ProfileView({ user, completedTotal, lessonTotal }) {
-  return <div className="lp-page lp-profile-page"><div className="lp-profile-card"><div className="lp-profile-avatar">{user.name?.charAt(0).toUpperCase() || "U"}</div><div><p className="lp-kicker">LEARNER PROFILE</p><h1>{user.name}</h1><p>{user.email}</p></div></div><div className="lp-progress-summary"><div><span>LESSONS COMPLETED</span><strong>{completedTotal}<small> / {lessonTotal}</small></strong></div><div><span>ACCOUNT TYPE</span><strong>{user.admin ? "Admin" : "Learner"}</strong></div><div><span>STUDY MODE</span><strong>Self-paced</strong></div></div></div>;
+  return <div className="lp-page lp-profile-page"><div className="lp-profile-card"><div className="lp-profile-avatar">{user.name?.charAt(0).toUpperCase() || "U"}</div><div><p className="lp-kicker">{user.admin ? "ADMIN ACCOUNT" : "LEARNER PROFILE"}</p><h1>{user.name}</h1><p>{user.email}</p></div></div>{user.admin ? <div className="lp-admin-badge lp-profile-role">ADMIN ACCESS</div> : <div className="lp-progress-summary"><div><span>LESSONS COMPLETED</span><strong>{completedTotal}<small> / {lessonTotal}</small></strong></div><div><span>ACCOUNT TYPE</span><strong>Learner</strong></div><div><span>STUDY MODE</span><strong>Self-paced</strong></div></div>}</div>;
 }

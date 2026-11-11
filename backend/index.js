@@ -7,6 +7,7 @@ const notFound = require("./middleware/notFound");
 const healthRoutes = require("./routes/healthRoutes");
 const authRoutes = require("./routes/authRoutes");
 const courseRoutes = require("./routes/courseRoutes");
+const adminRoutes = require("./routes/adminRoutes");
 const adminCourseRoutes = require("./routes/adminCourseRoutes");
 const catalogRoutes = require("./routes/catalogRoutes");
 
@@ -24,6 +25,7 @@ app.use(cookieParser());
 app.use("/api/health", healthRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/courses", courseRoutes);
+app.use("/api/admin", adminRoutes);
 app.use("/api/admin/courses", adminCourseRoutes);
 app.use("/api/catalog", catalogRoutes);
 app.use(notFound);
